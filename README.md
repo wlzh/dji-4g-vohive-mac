@@ -281,6 +281,123 @@ curl -fsSL https://raw.githubusercontent.com/iniwex5/vohive-release/master/insta
 
 ---
 
+## 11. 备选方案：在 arm64 常开小盒子（如全志 H618）裸机部署（不用 Mac/UTM）
+
+如果你不想让 Mac 一直开着，更省事、更省电的做法是用一台**常开的 arm64 Linux 小盒子**（如全志 H618、4 核 + 4G 内存 + 千兆网口 + USB 口，待机 ~2W）直接跑 vohive。和上面 Mac+UTM 方案相比，这条路**没有虚拟机、没有 USB 直通**——大疆模块直接插盒子的 USB 口，所以也就**没有第 5 步那个「USB 重新枚举断直通」的坑**。
+
+> **本节前提（不在此展开）：** 盒子已经刷好 **Armbian（Debian/Ubuntu 系，arm64）** 并能 SSH 进去；大疆 4G 模块已经插在盒子的 USB 口上。刷机、USB 供电等硬件准备不在本节范围内。
+>
+> 下面命令全部在 **盒子的 Linux（ssh 会话）** 里执行，和第 4~6 步几乎一致，只是少了 UTM 直通相关操作。
+
+### 11.1 确认环境
+
+```bash
+# 确认是 arm64（应输出 aarch64）
+uname -m
+
+# 确认是 Debian/Ubuntu 系、带 systemd
+cat /etc/os-release
+systemctl --version | head -1
+```
+
+### 11.2 确认模块已被系统识别
+
+```bash
+# 没有 lsusb 就先装
+sudo apt-get update && sudo apt-get install -y usbutils socat
+
+# 应能看到一行含 2ca3:4006（大疆默认身份）
+lsusb
+```
+
+> 看不到设备时：检查 USB 线/口，或换一个 USB 口重插；这类小盒子 USB 供电偏弱，模块掉线多半是供电问题（硬件部分本节不展开）。
+
+### 11.3 改大疆模块设备 ID（改成移远 EC25 身份）
+
+与第 5 步完全相同，依次执行：
+
+```bash
+# 1. 临时加载 option 驱动模块
+sudo modprobe option
+
+# 2. 把大疆当前识别码 2ca3:4006 写入 option 驱动，生成串口文件
+echo 2ca3 4006 | sudo tee /sys/bus/usb-serial/drivers/option1/new_id
+
+# 3. 通过 /dev/ttyUSB2 发 AT 指令，永久改 USB 身份为移远 2C7C:0125
+echo 'AT+QCFG="usbcfg",0x2C7C,0x0125,1,1,1,1,1,0,0' | socat - /dev/ttyUSB2,crnl
+
+# 4. 软重启模块使配置生效
+echo 'AT+CFUN=1,1' | socat - /dev/ttyUSB2,crnl
+```
+
+等几秒模块重新初始化，再查：
+
+```bash
+lsusb
+# 应显示：2c7c:0125 Quectel Wireless Solutions Co., Ltd. EC25 LTE modem
+```
+
+> **裸机和 Mac 方案的唯一区别就在这一步：** 没有 UTM 直通，`AT+CFUN=1,1` 让模块重新枚举（VID/PID 从 `2ca3:4006` 变 `2c7c:0125`）后，**设备依然留在本机**，不会像直通那样断开。如果重新枚举后 `/dev/ttyUSBx` 串口号变了，重跑一次 `lsusb` 确认即可。改身份是一次性的，改完终身有效。
+>
+> 万一 `/dev/ttyUSB2` 不存在，用 `ls /dev/ttyUSB*` 看实际串口号（通常 ttyUSB0~3，AT 口一般是第 3 个，即 ttyUSB2），把上面命令里的设备名换成实际的。
+
+### 11.4 一键部署 vohive
+
+模块身份改完后，直接在盒子里跑官方脚本（会自动识别 arm64 并下载 `vohive_<版本>_linux_arm64`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iniwex5/vohive-release/master/install.sh | bash
+```
+
+脚本会：
+
+- 下载二进制到 `/opt/vohive/bin/vohive`
+- 生成配置 `/opt/vohive/config/config.yaml`（默认 Web 账号密码 `admin / admin`）
+- 注册并启动 systemd 服务 `vohive.service`（**开机自动启动，盒子常开即长期运行**）
+- 数据/日志在 `/opt/vohive/data`、`/opt/vohive/logs`
+
+### 11.5 访问后台与验证
+
+先在盒子里看它的局域网 IP：
+
+```bash
+ip a    # 找 eth0 上的 192.168.x.x
+```
+
+从同一局域网的电脑/手机浏览器打开：
+
+```
+http://<盒子的IP>:7575
+```
+
+默认 `admin / admin`，**登录后立即改密码**。
+
+验证清单：
+
+- [ ] `uname -m` 是 `aarch64`
+- [ ] `lsusb` 能看到 `2c7c:0125 Quectel ... EC25 LTE modem`
+- [ ] `systemctl status vohive` 显示 active (running)
+- [ ] 浏览器访问 `http://<盒子IP>:7575` 出登录页，`admin/admin` 能登录并改密
+- [ ] vohive 后台能识别到 4G 模块、看到信号/短信等功能
+
+### 11.6 维护
+
+```bash
+# 看服务状态 / 日志
+systemctl status vohive
+journalctl -u vohive -f
+
+# 更新（自动备份旧二进制为 vohive.bak 再覆盖）
+curl -fsSL https://raw.githubusercontent.com/iniwex5/vohive-release/master/install.sh | bash
+
+# 卸载
+curl -fsSL https://raw.githubusercontent.com/iniwex5/vohive-release/master/uninstall.sh | bash
+```
+
+> 因为是 systemd 服务且盒子常开，**断电重启后 vohive 会自动拉起**，不需要像 Mac 方案那样依赖宿主机开机——这正是用常开 Linux 小盒子替代 Mac+UTM 的核心好处。
+
+---
+
 ## 致谢
 
 - 上游项目：[iniwex5/vohive-release](https://github.com/iniwex5/vohive-release)（VoHive 平台与一键安装脚本）
