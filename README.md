@@ -1,6 +1,6 @@
 # dji-4g-vohive-mac
 
-> 在 Mac（Apple Silicon / Intel 通用）上，用 **UTM** 跑一个 Linux 虚拟机，把**大疆 4G 模块（1 代，本质移远 Quectel EG25-G）**的 USB 身份从大疆私有 `2ca3:4006` **永久改成移远 Quectel EC25 的 `2C7C:0125`**，并在该 Linux 里一键部署 **vohive** 短信/网络/eSIM 管理平台的全套步骤。
+> 在 Mac（Apple Silicon / Intel 通用）上，用 **UTM** 跑一个 Linux 虚拟机，把**大疆 4G 模块（1 代，本质移远 Quectel EG25-G）**的 USB 身份从大疆私有 `2ca3:4006` **永久改成移远 Quectel EC25 的 `2C7C:0125`**，并在该 Linux 里一键部署 **vohive** 短信/网络/eSIM 管理平台的全套步骤；**另附一套脚本，可把这颗模组一键切换成 Mac 的 4G 上网卡**（VoHive 保号 ↔ Mac 上网两种模式自由切换）。
 
 ## 视频教程
 
@@ -14,6 +14,7 @@
 - 解决大疆 4G 模块默认 VID/PID 是大疆私有、通用驱动不认的问题——通过发 AT 指令 `AT+QCFG="usbcfg",...` 把模块内部 USB 身份永久改写为移远 EC25，改一次终身有效。
 - 同时覆盖 **Apple Silicon（arm64）** 和 **Intel（x86_64）** 两种 Mac：两者只有 ISO 和 VM 架构不同，VM 内所有操作完全一致。
 - 包含 USB 直通、改身份后重新枚举断直通的坑及处理、验证清单、维护命令、方案选型对比。
+- **支持把模组一键切换成 Mac 的 4G 上网卡**（VoHive 保号 ↔ Mac 上网两种模式自由切换，含三个自动化脚本），见下方「[让模组当 Mac 的 4G 上网卡](#让模组当-mac-的-4g-上网卡vohive--mac-切换)」章节。
 
 ## 项目依赖
 
@@ -337,6 +338,105 @@ cd vohive-backup
 sudo bash install.sh
 # → Mac 浏览器开 http://<VM-IP>:7575，admin/admin
 ```
+
+---
+
+## 让模组当 Mac 的 4G 上网卡（VoHive ↔ Mac 切换）
+
+VoHive 之外，这颗改好身份的 EG25G 还能**直接当 Mac 的 4G 上网卡**用——插张能上网的 SIM，Mac 就能通过它走蜂窝网络。两种用途靠模组的 `usbnet` 工作模式区分，用脚本一键切换。
+
+### 两种模式
+
+| 模式 | `usbnet` | 模组归属 | Mac 上的表现 | 用途 |
+|---|---|---|---|---|
+| **VoHive 保号**（默认） | `0`（QMI） | 在 VM 里 | 无 | 切卡 / 收发短信 / eSIM 管理 |
+| **Mac 上网** | `1`（ECM） | 在 Mac | 出现 ECM 网卡（en7/en8），拨号后拿 IP 上网 | Mac 走 4G |
+
+> ⚠️ **同一时刻只能一个模式**：模组是 USB 设备，要么归 VM、要么归 Mac，不能两边同时用。
+
+### 重要约束（先看清楚再用）
+
+1. **不是无缝切换**：改 `usbnet` 模组必须软重启才生效，切换有 **10~30 秒中断**。
+2. **两个方向不对称**：
+   - **VoHive → Mac**：✅ **全自动**。VM 发一条 AT 切 ECM，模组重启时 UTM 的 USB 直通（usbredir）自动断开、模组弹回 Mac，macOS 自动认 ECM 网卡。
+   - **Mac → VoHive**：⚠️ **要手动跑一次 `utmctl`**。因为 macOS 不驱动 Quectel 的串口（USB class 0xFF），Mac 这边发不了 AT 切回 QMI，必须先把模组塞回 VM（Linux 有串口）才能切。
+3. **Mac 上网会走蜂窝流量 → 产生 SIM 流量费**。保号卡（尤其国际漫游）流量很贵，建议换国内流量卡再用 Mac 上网模式。
+4. **这个定制固件没有「QMI + MBIM 并存」模式**（实测 `usbnet=3` 等于 ECM，不是并存），所以没法一个模式两边通用，必须切。
+
+### 前提准备（一次性）
+
+1. **Mac → VM 配 SSH key 免密**（脚本靠它远程发 AT / 控制 VoHive）：
+   ```bash
+   ssh-copy-id <VM用户>@<VM的IP>
+   ssh <VM用户>@<VM的IP> 'echo OK'   # 验证: 不输密码就成功
+   ```
+2. **VM 里 `sudo` 免密**（脚本要 sudo 发 AT + 控制 systemd），或接受脚本在 sudo 处停下输密码：
+   ```bash
+   # VM 里: sudo visudo，加一行  <用户> ALL=(ALL) NOPASSWD: ALL
+   ```
+3. **模组里插能上网的 SIM 卡**（Mac 上网模式才需要；保号模式用保号卡即可）。
+4. **拿 VM 的 IP 和 UTM 里 VM 的 UUID**：
+   ```bash
+   # VM 的 IP: 进 VM 跑 ip a
+   # UTM VM UUID:
+   plutil -p ~/Library/Containers/com.utmapp.UTM/Data/Documents/*.utm/config.plist | grep -i Identifier
+   # 用第一个 UUID（VM 本体的，不是磁盘的）
+   ```
+
+### 三个脚本（在 `scripts/` 目录）
+
+| 脚本 | 作用 | 怎么跑 |
+|---|---|---|
+| `eg25-status.sh` | 查模组当前在哪、什么模式、VoHive 活没活 | 随便跑 |
+| `eg25-to-mac.sh` | VoHive → Mac 上网 | 全自动 |
+| `eg25-to-vohive.sh` | Mac → VoHive | **必须在 Mac 终端跑**（含 utmctl） |
+
+安装到 `/usr/local/bin/`（随处可调）：
+```bash
+cd dji-4g-vohive-mac/scripts
+sudo install -m 755 eg25-status.sh eg25-to-mac.sh eg25-to-vohive.sh /usr/local/bin/
+```
+
+配置 VM 连接（环境变量，写进 `~/.zshrc` 或 `~/.bashrc`，不配则用脚本里的默认值）：
+```bash
+export VM_USER=ubuntu           # 你的 VM SSH 用户
+export VM_HOST=192.168.64.2     # 你的 VM IP
+export VM_NAME=Linux            # UTM 里 VM 的名字（utmctl list 看，或直接用 UUID）
+```
+
+### 切换流程
+
+**切到 Mac 上网**（VoHive → Mac，全自动）：
+```bash
+eg25-to-mac.sh
+# 等 30 秒，看到 "✅ 完成：Mac 上网模式" 即可
+# 验证出口是不是蜂窝: curl ifconfig.me
+```
+
+**切回 VoHive 保号**（Mac → VoHive，在 Mac 终端跑）：
+```bash
+eg25-to-vohive.sh
+# 中间会调 utmctl 连两次 USB，最后启动 VoHive
+```
+
+> ⚠️ `eg25-to-vohive.sh` 里的 `VM_NAME` 如果名字不认，把它换成 VM 的 UUID（前提准备第 4 步拿到的）。
+
+### 故障排查
+
+| 现象 | 排查 |
+|---|---|
+| `eg25-to-mac` 后 Mac 没 IP | SIM 没插好 / 模组飞行模式（进 VM 查 `AT+CFUN?` 应为 1 不是 4）/ 模组没自动拨号 |
+| `eg25-to-vohive` 报 `utmctl 失败` | 没在 Mac 图形会话跑 / UTM 没开 / VM 标识不对（用 UUID） |
+| VoHive 启动但报「未找到匹配 IMEI 的设备」 | 模组没真正进 VM（`eg25-status.sh` 看归属），用 UUID 重连 USB |
+| 切完卡住（模组哪边都没有） | 跑 `eg25-status.sh` 看模组归属，手动 `utmctl usb connect <UUID> 2c7c:0125` 连到该在的那边 |
+
+### 为什么不做成完全无感切换
+
+卡在两个硬限制：
+- **utmctl 远程调不动**：UTM 的命令行 `utmctl` 通过 Mach 端口连 UTM.app，只在 Mac 图形登录会话里能用，SSH（含 `launchctl asuser`）都连不上（报 `OSStatus错误-1743`）。所以含 utmctl 的步骤必须在 Mac 终端手动触发。
+- **macOS 不驱动 Quectel 串口**：模组的 AT 控制口是 USB class 0xFF（vendor-specific），macOS 不给加载串口驱动，Mac 这边发不了 AT 命令，所以从 Mac 切回 QMI 必须借 VM。
+
+要彻底免切换，只能**两个设备各管一摊**：VoHive 用一个模组保号，Mac 上网用另一个（手机热点 / 独立 4G 棒）。
 
 ---
 
