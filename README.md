@@ -2,6 +2,52 @@
 
 > 在 Mac（Apple Silicon / Intel 通用）上，用 **UTM** 跑一个 Linux 虚拟机，把**大疆 4G 模块（1 代，本质移远 Quectel EG25-G）**的 USB 身份从大疆私有 `2ca3:4006` **永久改成移远 Quectel EC25 的 `2C7C:0125`**，并在该 Linux 里一键部署 **vohive** 短信/网络/eSIM 管理平台的全套步骤；**另附一套脚本，可把这颗模组一键切换成 Mac 的 4G 上网卡**（VoHive 保号 ↔ Mac 上网两种模式自由切换）。
 
+## 🆕 VoHive 2 预览版已开始发布（未出正式版）
+
+> **VoHive 2 已开启预发布**：当前为开发版 **`0.1.2+gdb2d78a8`**（musl 静态编译 + UPX 压缩的单文件二进制），**尚未发布正式版**。本仓库已第一时间内置 linux/amd64 与 linux/arm64 两个预编译产物，并可在线体验全新前端。
+
+**在线前端演示（演示数据 · 不连接后端，刷新即重置）：<https://cool-glitter-88a5.iniwex.workers.dev/>**
+
+<img src="vohive2/screenshot-dashboard.png" width="860" alt="VoHive 2 前端预览：设备总览 / 主链路信号与 IMS / 实时流量" />
+
+<details>
+<summary>📱 点击展开完整页面长图（蜂窝网络信息 / SIM 与 eSIM / 流量统计）</summary>
+
+<img src="vohive2/screenshot-full.png" width="860" alt="VoHive 2 前端完整页面" />
+
+</details>
+
+对比 v1 后台，v2 前端预览可见的全新界面包括：
+
+- **多设备总览**：VoLTE / VoWiFi / 5G / 数据卡状态一屏尽览（演示页 8/10 台设备，7 台在线）
+- **主链路实时面板**：RSRP / RSRQ / SINR / 频段 / IMS 注册状态、VoLTE 承载与鉴权链路
+- **实时流量图表**：最近 60 秒每秒采样，上下行速率、接口累计流量
+- **蜂窝网络详情**：PLMN / 制式 / EARFCN / PCI / TAC / 小区号 / 带宽 / PS 域附着
+- **SIM 与 eSIM 管理**：卡槽切换、本机号码 / ICCID / IMSI、eSIM 配置读取
+- **日 / 周 / 月流量统计**：峰值时段分析
+
+### 内置预发布产物（[`vohive2/`](vohive2/) 目录）
+
+| 文件 | 适用架构 | 大小 | SHA-256（前 8 位） |
+|---|---|---|---|
+| [`vohive2-linux-amd64-musl-0.1.2+gdb2d78a8-upx`](vohive2/) | x86_64（Intel Mac 的 VM / 方案 B） | 14 MB | `82504558` |
+| [`vohive2-linux-arm64-musl-0.1.2+gdb2d78a8-upx`](vohive2/) | arm64（Apple Silicon 的 VM / 方案 A） | 13 MB | `411026c1` |
+
+> 完整 SHA-256 见 [`vohive2/README.md`](vohive2/README.md)。
+
+下载运行（以 arm64 为例，amd64 同理；musl 静态编译，任意 Linux 直接跑，无需装依赖）：
+
+```bash
+curl -L -o vohive2 \
+  "https://raw.githubusercontent.com/wlzh/dji-4g-vohive-mac/main/vohive2/vohive2-linux-arm64-musl-0.1.2+gdb2d78a8-upx"
+chmod +x vohive2
+./vohive2   # 具体启动参数以正式版发布说明为准
+```
+
+> ⚠️ **这是预发布开发版**：CLI 参数、配置格式、端口等可能随正式版随时调整，暂不建议替换生产环境的 v1；v1 完整部署教程见下方，两者互不影响。正式版发布后本节将同步更新。
+
+---
+
 ## 视频教程
 
 [![大疆 4G 模块在 Mac 上部署 VoHive 视频教程](https://img.youtube.com/vi/PZRkoggXFco/hqdefault.jpg)](https://youtu.be/PZRkoggXFco)
